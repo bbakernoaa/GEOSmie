@@ -7,6 +7,7 @@ import os
 import numba
 import hydrophobic
 import sys
+import multiprocessing
 from pymiecoated.mie_coated import MultipleMie
 import particleparams as pp
 
@@ -670,7 +671,7 @@ def calculatePSD(params, radind, onerh, rh, xxarr, drarr, rrat, lam):
 #  oppfx:      the path for the output file
 #  oppclassic: generate legacy format lookup table
 def fun(partID0, datatype, oppfx, oppclassic):
-
+  global globalSpheroid
   # clean up partID, reduce just to particle type (e.g., bc, oc, ...)
   partID = partID0.split('/')[-1].replace(".json", "")
 
@@ -808,69 +809,104 @@ def fun(partID0, datatype, oppfx, oppclassic):
     therefore, we should move this huge block of code under the loop into a separate function that takes lambda as a 
     parameter along with everything else it needs
     """
-    for li, lam in enumerate(lambarr):
-      print("+++++ LAMBDA %.2e +++++"%lam)
-      mr0 = [partMr[i](lam) for i in range(len(partMr))]
-      mi0 = [-partMi[i](lam) for i in range(len(partMi))]
-      #mi0 = -partMi(lam) # defined as negative 
-      nref0 = [complex(mr0[i], mi0[i]) for i in range(len(mr0))]
+    pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
+    args = [(li, lam, params, radind, rh, xxarr, drarr, xxarr_ if useGrasp else None, drarr_ if useGrasp else None, costarr, angmie, partMr, partMi, waterMr, waterMi, mode, useGrasp, globalSpheroid, multipleMie if mode == 'mie' else None, allkeys, scatkeys, elekeys, extrakeys, nlscalarkeys, oppclassic) for li, lam in enumerate(lambarr)]
 
-      xconv = 2 * np.pi / lam
-      rarr = xxarr / xconv
+    results = pool.map(process_wavelength_wrapper, args)
 
-      if params['rhDep']['type'] == 'trivial':
-        nrefwater = complex(1,0) # placeholder, never used
-      else:
+    pool.close()
+    pool.join()
+
+    for li, result in enumerate(results):
+        for rhi, ret in enumerate(result):
+            if ret is None:
+                continue
+            if oppclassic:
+              for key in allkeys: # we can also save to allvals and write later
+                if key in scatkeys:
+                  opncdf.variables[key][radind, rhi, li, :] = ret[key][:]
+                elif key in elekeys:
+                  opncdf.variables[key][:, radind, rhi, li] = ret[key][:]
+                elif key in scalarkeys + extrakeys:
+                  opncdf.variables[key][radind, rhi, li] = ret[key]
+                elif key in nlscalarkeys:
+                  opncdf.variables[key][radind, rhi] = ret[key]
+                else:
+                  print("key category missing: %s"%key)
+                  sys.exit()
+            else:
+              for key in allkeys: # we can also save to allvals and write later
+                if key in scatkeys:
+                  opncdf.variables[key][radind, li, rhi, :] = ret[key][:]
+                elif key in elekeys:
+                  opncdf.variables[key][radind, li, rhi, :] = ret[key][:]
+                elif key in scalarkeys + extrakeys:
+                  opncdf.variables[key][radind, li, rhi] = ret[key]
+                elif key in nlscalarkeys:
+                  opncdf.variables[key][radind, rhi] = ret[key]
+                else:
+                  print("key category missing: %s"%key)
+                  sys.exit()
+
+  opncdf.close()
+
+def process_wavelength_wrapper(args):
+    return process_wavelength(*args)
+
+def process_wavelength(li, lam, params, radind, rh, xxarr, drarr, xxarr_, drarr_, costarr, angmie, partMr, partMi, waterMr, waterMi, mode, useGrasp, globalSpheroid, multipleMie, allkeys, scatkeys, elekeys, extrakeys, nlscalarkeys, oppclassic):
+    """
+    Processes the optical properties for a single wavelength.
+    """
+    print(f"+++++ LAMBDA {lam:.2e} +++++")
+    mr0 = [partMr[i](lam) for i in range(len(partMr))]
+    mi0 = [-partMi[i](lam) for i in range(len(partMi))]
+    nref0 = [complex(mr0[i], mi0[i]) for i in range(len(mr0))]
+
+    xconv = 2 * np.pi / lam
+    rarr = xxarr / xconv
+
+    if params['rhDep']['type'] == 'trivial':
+        nrefwater = complex(1, 0)
+    else:
         watermr0 = waterMr(lam)
         watermi0 = waterMi(lam)
         nrefwater = complex(watermr0, watermi0)
 
-      if 'maxrh' in params:
+    if 'maxrh' in params:
         maxrh = params['maxrh']
         capind = np.where(np.array(rh) > maxrh)[0]
-        rh = np.array(rh)
-        rh[capind] = maxrh
+        rh_capped = np.array(rh)
+        rh_capped[capind] = maxrh
+    else:
+        rh_capped = rh
 
-      """
-      Get Dry Particle Properties
-      """
-      mr0, mi0, gf, rrat0 = getHumidRefractiveIndex(params, radind, 0, rh, nref0, nrefwater)
-      psd0, reff_mass0, rLow0, rUp0 = calculatePSD(params, radind, 0., rh, xxarr, drarr, rrat0, lam)
+    mr0, mi0, gf, rrat0 = getHumidRefractiveIndex(params, radind, 0, rh, nref0, nrefwater)
+    psd0, reff_mass0, rLow0, rUp0 = calculatePSD(params, radind, 0., rh, xxarr, drarr, rrat0, lam)
 
+    rh_results = []
 
-      """
-      Start RH loop
-      """
-      for rhi, onerh in enumerate(rh):
+    mass0 = -1.0 # will be calculated at rh=0
+
+    for rhi, onerh in enumerate(rh_capped):
         pparam = params['psd']['params']
-        rparams = params['rhDep']
+        psdtype = params['psd']['type']
 
-        if params['rhDep']['type'] == 'trivial' and rhi > 0: # same values for all rh, save in computation
-          copyDryValues(opncdf, allkeys, scatkeys, elekeys, extrakeys, nlscalarkeys, radind, rhi, li, oppclassic)
-          continue
+        if params['rhDep']['type'] == 'trivial' and rhi > 0:
+            rh_results.append(None)  # Placeholder for trivial RH
+            continue
 
         mr, mi, gf, rrat = getHumidRefractiveIndex(params, radind, rhi, rh, nref0, nrefwater)
-
         psd, ref, rLow, rUp = calculatePSD(params, radind, onerh, rh, xxarr, drarr, rrat, lam)
         if useGrasp:
-          psd_, ref_, rLow_, rUp_ = calculatePSD(params, radind, onerh, rh, xxarr_, drarr_, rrat, lam)
-
-        """
-        ***********
+            psd_, ref_, rLow_, rUp_ = calculatePSD(params, radind, onerh, rh, xxarr_, drarr_, rrat, lam)
         
-        Start the calculations
-
-        ***********
-        """
-
-        rhop00 = params['rhop0'] # read from a file
-        if isinstance(rhop00, list): 
-          # rhop0 is defined separately for each size bin, read the right one
-          rhop0 = rhop00[radind]
+        rhop00 = params['rhop0']
+        if isinstance(rhop00, list):
+            rhop0 = rhop00[radind]
         else:
-          rhop0 = rhop00
+            rhop0 = rhop00
 
-        rhow  = 1000. # density of water, constant
+        rhow  = 1000.
         rhop = rrat ** 3. * rhop0 + (1. - rrat ** 3.) * rhow
 
         if mode == 'mie':
@@ -880,99 +916,62 @@ def fun(partID0, datatype, oppfx, oppclassic):
             allret.append(rawret)
           
           if len(allret) == 1:
-            # make compatible with multibin psd
-            allret = [allret[0] for i in range(len(psd))] # multibin
+            allret = [allret[0] for i in range(len(psd))]
 
-          retkeys = list(allret[0].keys()) # all are assumed to have the identical keys so we just get them from 0th index
-
-          # separate integration step
+          retkeys = list(allret[0].keys())
           ret = integratePSD(multipleMie.xArr, allret, psd, pparam['fracs'][radind], lam, reff_mass0, rhop0, rhop)
 
         elif useGrasp:
           ret0 = globalSpheroid
-
           allmr = ret0['mr'][:]
-          allmi = -ret0['mi'][:] # change sign
-
+          allmi = -ret0['mi'][:]
           keys = ['ext', 'abs', 'sca', 'qext', 'qabs', 'qsca', 'qb', 'g', 'cext', 'csca', 'cabs']
-#          keys = ['ext', 'abs', 'sca', 'qext', 'qsca', 'qb', 'g', 'cext', 'csca']
           scatelekeys = ['scama']
-          scatelems = ['p11', 'p22', 'p33', 'p44', 'p12', 'p34'] # order Mischenko's code expects
+          scatelems = ['p11', 'p22', 'p33', 'p44', 'p12', 'p34']
           ret1 = {}
           for kk in keys:
             valmat = ret0[kk][:,:,:]
             val = get_interpolated(valmat, mr, mi, allmr, allmi)
             ret1[kk] = val
-
           for kk in scatelekeys:
             for scati in range(len(scatelems)):
-              if scati == 0:
-                dodebug = True
-              else:
-                dodebug = False
               valmat = ret0[kk][:,:,:,scati,:]
-              val = get_interpolated(valmat, mr, mi, allmr, allmi, debug=dodebug)
+              val = get_interpolated(valmat, mr, mi, allmr, allmi, debug=(scati==0))
               ret1[scatelems[scati]] = val
-
-          ret1['qsca'] = ret1['qsca']
-
           ret1['csca'] = np.array(ret1['qsca']) * np.pi * rarr ** 2
           ret1['cext'] = np.array(ret1['qext']) * np.pi * rarr ** 2
-
-          ret1 = [ret1 for i in range(len(psd))] # multibin
-          if len(pparam['fracs']) == 1:
-            # if only one set of fracs is given we always use it
-            fracs = pparam['fracs'][0]
-          else:
-            fracs = pparam['fracs'][radind]
-          retkeys = list(ret1[0].keys()) # all are assumed to have the identical keys so we just get them from 0th index
+          ret1 = [ret1 for i in range(len(psd))]
+          fracs = pparam['fracs'][0] if len(pparam['fracs']) == 1 else pparam['fracs'][radind]
+          retkeys = list(ret1[0].keys())
           ret = integratePSD(xxarr, ret1, psd, fracs, lam, reff_mass0, rhop0, rhop)
 
-          # This is a hack and only applied if (a) psd type is lognormal or 
-          # (b) psd type is 'du' and the number fraction = 1 (i.e., not the first bin)
-          # Post integration rescaling of the mass efficiencies because of limited resolution of kernel tables
-          # introducing error in effective radius calculation
-          # Note: this could be done more generally for number, volume, etc that should not vary with wavelength
-          # For now keep it simple and fix the extinction efficiencies
           if(psdtype == 'lognorm') or (psdtype == 'du' and len(pparam['fracs'][radind]) == 1):
             rrarr = xxarr_ * lam / (2. * np.pi)
             for fraci, frac in enumerate(fracs):
               rarr2 = rrarr ** 2. * psd_[fraci]
               rarr3 = rrarr ** 3. * psd_[fraci]
               reff = np.sum(rarr3) / np.sum(rarr2)
-
               ret['bsca'] = ret['bsca'] * ret['rEff']/reff
               ret['bext'] = ret['bext'] * ret['rEff']/reff
               ret['bbck'] = ret['bbck'] * ret['rEff']/reff
               ret['rEff'] = reff
 
-
         qsca = np.array(ret['qsca'])
         qext = np.array(ret['qext'])
         qb = np.array(ret['qb'])
-        g  = np.array(ret['g'])
-
-        """
-        Calculate extra post-integration variables
-        """
 
         ret['lidar_ratio'] = qext / qb * 4 * np.pi
-
         ret['ssa'] = qsca / qext
-
         ret['rLow'] = rLow
         ret['rUp'] = rUp
 
-        """
-        Calculate a posteriori normalization of phase matrix elements
-        """
         if useGrasp:
-            # interpolate Grasp phase matrix to same angles as mie particles
             costarrmie = np.cos(np.radians(angmie))
             for key in scatelems:
-                cs = CubicSpline(costarr[::-1],ret[key][::-1])   # reverse because CS requires ascending x-values
-                ret[key] = cs(costarrmie[::-1])[::-1]  # reverse it back after interpolation
-
+                cs = CubicSpline(costarr[::-1],ret[key][::-1])
+                ret[key] = cs(costarrmie[::-1])[::-1]
+            ang = angmie
+        else:
             ang = angmie
         
         theta = np.radians(ang)
@@ -986,55 +985,20 @@ def fun(partID0, datatype, oppfx, oppclassic):
 
         pbackorder = ['p11', 'p12', 'p33', 'p34', 'p22', 'p44']
         ret['pback'] = np.array([ret[key][-1] for key in pbackorder])
-
         ret['growth_factor'] = gf
 
         if rhi == 0.0:
-          mass0 = ret['volume'] * rhop0
+            mass0 = ret['volume'] * rhop0
 
         ret['rhop'] = rhop
         ret['area'] = ret['area'] / mass0
         ret['volume'] = ret['volume'] / mass0
-
-        # mr and mi are arrays since we might have multimodal PSD with different components as modes
         ret['refreal'] = mr[0]
-        ret['refimag'] = -np.abs(mi[0]) # force negative to be consistent with Pete's tables
+        ret['refimag'] = -np.abs(mi[0])
 
-        pback = np.array(ret['pback'])
+        rh_results.append(ret)
 
-#       Support for legacy format lookup tables
-        if oppclassic:
-          for key in allkeys: # we can also save to allvals and write later
-            if key in scatkeys:
-              opncdf.variables[key][radind, rhi, li, :] = ret[key][:]
-            elif key in elekeys:
-              opncdf.variables[key][:, radind, rhi, li] = ret[key][:]
-            elif key in scalarkeys + extrakeys:
-              opncdf.variables[key][radind, rhi, li] = ret[key]
-            elif key in nlscalarkeys:
-              opncdf.variables[key][radind, rhi] = ret[key]
-            else:
-              print("key category missing: %s"%key)
-              sys.exit()
-        else:
-          for key in allkeys: # we can also save to allvals and write later
-            if key in scatkeys:
-              opncdf.variables[key][radind, li, rhi, :] = ret[key][:]
-            elif key in elekeys:
-              opncdf.variables[key][radind, li, rhi, :] = ret[key][:]
-            elif key in scalarkeys + extrakeys:
-              opncdf.variables[key][radind, li, rhi] = ret[key]
-            elif key in nlscalarkeys:
-              opncdf.variables[key][radind, rhi] = ret[key]
-            else:
-              print("key category missing: %s"%key)
-              sys.exit()
-        # end rh loop
-      # end lambda loop
-    # end radind loop
-
-  opncdf.close()
-
+    return rh_results
 """
 Run Mie directly at the desired values
 

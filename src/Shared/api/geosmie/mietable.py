@@ -1,145 +1,149 @@
 """
-
-   Implements API to access Mie LUTs for a single specie.
-
+Implements API to access Mie LUTs for a single species.
+Supports both Eager (NumPy) and Lazy (Dask) evaluation via Xarray.
 """
 
 import numpy as np
 import xarray as xr
+from typing import List, Optional, Union, Tuple
 
-__VERSION__ = 0.9.0
+__VERSION__ = "0.9.1"
 
-NRH_BINS = 991 
+class MieTABLE:
+    """
+    Interface for Mie look-up tables stored in NetCDF format.
+    """
 
-class MieTABLE(object):
-
-    def __init__ ( self, filename, wavelengths=None, nmom=None )
+    def __init__(self, filename: str, wavelengths: Optional[List[float]] = None):
         """
-        Uses xarray to load Mie table from file name. On inout
+        Initialize MieTABLE by loading a NetCDF file.
 
-        filename    --- Mie Table file name
-        wavelengths --- desired wavelengths; if omitted all wavelengths on file
-        nmon        --- number of moments for phase function; if omitted no phase
-                        function needed (saves memory).
-
+        Parameters
+        ----------
+        filename : str
+            Path to the Mie Table NetCDF file.
+        wavelengths : list of float, optional
+            Desired wavelengths [m]. If omitted, all wavelengths in the file are used.
         """
+        self.ds = xr.open_dataset(filename)
 
-        # Single Scattering properties (fix order of dimension, what is below comes from Fortran
-        # ----------------------------
-        self.wavelengths = None  # (c) wavelengths [m]
-        self.rh   = None         # (r) RH values   [fraction]
-        self.reff = None         # (r,b) effective radius [m]
-        self.bext = None         # (r,c,b) bext values [m2 kg-1]
-        self.bsca = None         # (r,c,b) bsca values [m2 kg-1]
-        self.bbck = None         # (r,c,b) bbck values [m2 kg-1]
-        self.g    = None         # (r,c,b) asymmetry parameter
-        self.p11  = None         # (r,c,b) Backscatter phase function, index 1 
-        self.p22  = None         # (r,c,b) Backscatter phase function, index 5
-        self.pmom = None         # (c,r,b,m,p) moments of phase function              CHECK FORTRAN!!!!
-        self.pback = None        # (c,r,b,p) moments of backscatter phase function
-        self.gf   = None         # (r,b) hygroscopic growth factor
-        self.rhop = None         # (r,b) wet particle density [kg m-3]
-        self.rhod = None         # (r,b) dry particle density [kg m-3]
-        self.vol  = None         # (r,b) wet particle volume [m3 kg-1]
-        self.area = None         # (r,b) wet particle cross section [m2 kg-1]
-        self.refr = None         # (r,c,b) real part of refractive index
-        self.refi = None         # (r,c,b) imaginary part of refractive index
+        # Standardize dimension names
+        rename_dict = {}
+        if "radius" in self.ds.dims:
+            rename_dict["radius"] = "bin"
+        if "lambda" in self.ds.dims:
+            rename_dict["lambda"] = "wavelength"
+        if "nPol" in self.ds.dims:
+            rename_dict["nPol"] = "p"
 
-        # May or may not need this if using xarray for RH interpolation
-        # -------------------------------------------------------------
-        self.rhi = None      # pointer to rh LUT
-        self.rha = None       # slope on rh LUT
+        if rename_dict:
+            self.ds = self.ds.rename(rename_dict)
 
-#---
-        def getChannel(self, wavelength):
-            """
-            Returns channel number for a given wavelength.
-            """
-            channel = 0
-            return channel
-#---
-        def getWavelength(self, channel):
-            """
-            Returns channel number for a given wavelength.
-            """
-            wavelength = 0
-            return wavelength
+        if wavelengths is not None:
+            self.ds = self.ds.sel(wavelength=wavelengths, method="nearest")
 
-#---
+        # Expose coordinates as attributes for convenience
+        self.wavelengths = self.ds.wavelength
+        self.rh = self.ds.rh
+        self.bins = self.ds.bin
 
-        def getXXX ( self, q_mass, rh, bin, wavelength=None, channel=None):
-            """
-            Given either channel or wavelength, compute XXX,
-            preserving the shape of the input:
-
-            q_mass ---  aerosol layer mass profile
-            rh     ---  relative humidity [0,1]
-
-            Notice that q_mass and rh must have the same shape.
-            
-            """
-
-            return
-
+    def _interpolate(self, rh: xr.DataArray, bin_idx: int, wavelength: Optional[float] = None) -> xr.Dataset:
         """
-        Implement getXXX for these
-                          getAOT     (AOT used to be called TAU)
-                          getSSA        
-                          getGASYM       
-                          getScalar --> AOT, SSA, GASYM
-                          getBEXT
-                          getBSCA
-                          getBBCK
-                          getREFF
-                          getPMOM
-                          getVector  --> AOT, SSA, PMOM
-                          getGF
-                          getRHOP
-                          getRHOD
-                          getVOLUME
-                          getAREA
-                          getRefIndex  --> REFR, REFI
+        Perform interpolation on RH and selection on bin/wavelength.
         """
-        
-    #______________________________________________________________
+        # Select bin (bins are 1-indexed in the file, but let's be careful)
+        # The 'bin' coordinate in the file is [1, 2, 3, ...]
+        subset = self.ds.sel(bin=bin_idx)
 
-    if __name__ == "__main__":
+        if wavelength is not None:
+            subset = subset.sel(wavelength=wavelength, method="nearest")
 
-        # Sample Mie Tables
-        # -----------------
-        dirn = '/discover/nobackup/projects/gmao/share/dasilva/fvInput/ExtData/chemistry/AerosolOptics/v0.0.0/x/'
-        Tables = [dirn + 'optics_DU.v7.nc', dirn + 'optics_OC.v2_3.nc']
-        
+        # Interpolate RH. rh input should be [0, 1].
+        # Clip RH to the range available in the table to avoid NaNs.
+        rh_min = float(self.rh.min())
+        rh_max = float(self.rh.max())
+        rh_clipped = rh.clip(rh_min, rh_max)
 
-        # Aerosol state (all species)
-        # ---------------------------
+        return subset.interp(rh=rh_clipped)
 
-        aer_Nv = '/css/gmao/geos-it/products/Y2023/M02/D05/GEOS.it.asm.aer_inst_3hr_glo_C180x180x6_v72.GEOS5294.2023-02-05T1200.V01.nc4'
+    def getBEXT(self, q_mass: xr.DataArray, rh: xr.DataArray, bin_idx: int, wavelength: Optional[float] = None) -> xr.DataArray:
+        """Calculate mass extinction: bext * q_mass"""
+        interp_ds = self._interpolate(rh, bin_idx, wavelength)
+        return interp_ds.bext * q_mass
 
-        aer = xr.open_dataset(aer_Nv)
-        
-        # Dust
-        # ----
-        table = dirn + 'optics_DU.v7.nc'
-        wavelengths = [470e-9, 550e-9, 670e-9, 870e-9]
-        mie = MieTable(table,wavelengths)
-        
-        q_mass = aer['DU003'] * aer['DELP'] / 9.81
-        rh = aer['RH']
-        aot = mie.getAOT(q_mass,rh,3, 550e-9)
-        vol = mie.GetVOLUME(q_mass,rh,3)
-        (aot, ssa, pmom) = mie.getVECTOR(q_mass,rh,3, 550e-9)
+    def getBSCA(self, q_mass: xr.DataArray, rh: xr.DataArray, bin_idx: int, wavelength: Optional[float] = None) -> xr.DataArray:
+        """Calculate mass scattering: bsca * q_mass"""
+        interp_ds = self._interpolate(rh, bin_idx, wavelength)
+        return interp_ds.bsca * q_mass
 
-        # OC
-        # --
-        table = dirn + 'optics_DU.v7.nc'
-        wavelengths = [470e-9, 550e-9, 670e-9, 870e-9]
-        mie = MieTable(table,wavelengths)
-        
-        q_mass = aer['BCPHILIC'] * aer['DELP'] / 9.81
-        rh = aer['RH']
-        aot = mie.getAOT(q_mass,rh,2, 550e-9)
-        vol = mie.GetVOLUME(q_mass,rh,3)
-        (aot, ssa, pmom) = mie.getVECTOR(q_mass,rh,3, 550e-9)
-  
-        
+    def getAOT(self, q_mass: xr.DataArray, rh: xr.DataArray, bin_idx: int, wavelength: Optional[float] = None) -> xr.DataArray:
+        """AOT is the same as getBEXT (integrated over layers, but here we return profile)"""
+        return self.getBEXT(q_mass, rh, bin_idx, wavelength)
+
+    def getSSA(self, rh: xr.DataArray, bin_idx: int, wavelength: Optional[float] = None) -> xr.DataArray:
+        """Get Single Scattering Albedo"""
+        interp_ds = self._interpolate(rh, bin_idx, wavelength)
+        return interp_ds.ssa
+
+    def getGASYM(self, rh: xr.DataArray, bin_idx: int, wavelength: Optional[float] = None) -> xr.DataArray:
+        """Get Asymmetry Parameter"""
+        interp_ds = self._interpolate(rh, bin_idx, wavelength)
+        return interp_ds.g
+
+    def getScalar(self, q_mass: xr.DataArray, rh: xr.DataArray, bin_idx: int, wavelength: Optional[float] = None) -> Tuple[xr.DataArray, xr.DataArray, xr.DataArray]:
+        """Get AOT, SSA, and GASYM simultaneously"""
+        interp_ds = self._interpolate(rh, bin_idx, wavelength)
+        aot = interp_ds.bext * q_mass
+        return aot, interp_ds.ssa, interp_ds.g
+
+    def getREFF(self, rh: xr.DataArray, bin_idx: int) -> xr.DataArray:
+        """Get Effective Radius"""
+        interp_ds = self._interpolate(rh, bin_idx)
+        return interp_ds.rEff
+
+    def getGF(self, rh: xr.DataArray, bin_idx: int) -> xr.DataArray:
+        """Get Growth Factor"""
+        interp_ds = self._interpolate(rh, bin_idx)
+        return interp_ds.growth_factor
+
+    def getRHOP(self, rh: xr.DataArray, bin_idx: int) -> xr.DataArray:
+        """Get Wet Particle Density"""
+        interp_ds = self._interpolate(rh, bin_idx)
+        return interp_ds.rhop
+
+    def getRHOD(self, bin_idx: int) -> xr.DataArray:
+        """Get Dry Particle Density (at rh=0)"""
+        return self.ds.rhop.sel(bin=bin_idx, rh=0, method="nearest")
+
+    def getBBCK(self, q_mass: xr.DataArray, rh: xr.DataArray, bin_idx: int, wavelength: Optional[float] = None) -> xr.DataArray:
+        """Get Mass Backscatter: bbck * q_mass"""
+        interp_ds = self._interpolate(rh, bin_idx, wavelength)
+        return interp_ds.bbck * q_mass
+
+    def getPMOM(self, rh: xr.DataArray, bin_idx: int, wavelength: Optional[float] = None) -> xr.DataArray:
+        """Get Phase Function moments"""
+        interp_ds = self._interpolate(rh, bin_idx, wavelength)
+        return interp_ds.pmom
+
+    def getVOLUME(self, q_mass: xr.DataArray, rh: xr.DataArray, bin_idx: int) -> xr.DataArray:
+        """Get Total Volume: volume * q_mass"""
+        interp_ds = self._interpolate(rh, bin_idx)
+        return interp_ds.volume * q_mass
+
+    def getAREA(self, q_mass: xr.DataArray, rh: xr.DataArray, bin_idx: int) -> xr.DataArray:
+        """Get Total Cross Section: area * q_mass"""
+        interp_ds = self._interpolate(rh, bin_idx)
+        return interp_ds.area * q_mass
+
+    def getRefIndex(self, rh: xr.DataArray, bin_idx: int, wavelength: Optional[float] = None) -> Tuple[xr.DataArray, xr.DataArray]:
+        """Get Real and Imaginary Refractive Indices"""
+        interp_ds = self._interpolate(rh, bin_idx, wavelength)
+        return interp_ds.refreal, interp_ds.refimag
+
+    def getVector(self, q_mass: xr.DataArray, rh: xr.DataArray, bin_idx: int, wavelength: Optional[float] = None) -> Tuple[xr.DataArray, xr.DataArray, xr.DataArray]:
+        """Get AOT, SSA, and Phase Function moments (PMOM)"""
+        interp_ds = self._interpolate(rh, bin_idx, wavelength)
+        aot = interp_ds.bext * q_mass
+        # pmom might not be in all files, handle gracefully
+        pmom = interp_ds.get("pmom", None)
+        return aot, interp_ds.ssa, pmom

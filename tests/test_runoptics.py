@@ -28,7 +28,10 @@ def runoptics_output():
     ]
 
     # Run the script from the correct directory
-    subprocess.run(command, check=True, cwd=run_dir, capture_output=True, text=True)
+    # Add project root to PYTHONPATH so that absolute imports work
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.getcwd() + ":" + env.get("PYTHONPATH", "")
+    subprocess.run(command, check=True, cwd=run_dir, capture_output=True, text=True, env=env)
 
     # Yield the path to the output file
     yield output_filepath

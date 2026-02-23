@@ -165,13 +165,19 @@ def growth_factor_sulfate(relhum: xr.DataArray, r_dry: Union[xr.DataArray, float
     # but we'll try to stay in SI as much as possible.
     # Legacy code uses g cm-3 and cm.
 
-    # Saturation vapor pressure
-    es = E_STR * np.exp(L_V / R_VAPOR * (1.0 / T_TRIPLE - 1.0 / temp))
+    # Saturation vapor pressure (Legacy constants)
+    llv_legacy = 2.501e6
+    rv_legacy = 461.0
+    ttr_legacy = 273.16
+    estr_legacy = 611.0
+    es = estr_legacy * np.exp(llv_legacy / rv_legacy * (1.0 / ttr_legacy - 1.0 / temp))
 
-    # Mass concentration of water (vapor)
-    # n_v = relhum * es / (k * temp)
-    h2o_mass_kg_m3 = (relhum * es) / (R_VAPOR * temp)
-    h2o_mass_g_cm3 = h2o_mass_kg_m3 * 1e3 / 1e6
+    # Mass concentration of water (vapor) using legacy constants
+    k_legacy = 1.38e-23
+    navogad_legacy = 6.022e23
+    mw_h2o_legacy = 0.018
+    n_v = relhum * es / (k_legacy * temp)
+    h2o_mass_g_cm3 = n_v / navogad_legacy * mw_h2o_legacy * 1000.0 / 1e6
 
     # Kelvin effect iteration (Simplified from legacy grow_v75)
     # Start with an assumption of 80 wt % H2SO4
@@ -193,35 +199,42 @@ def growth_factor_sulfate(relhum: xr.DataArray, r_dry: Union[xr.DataArray, float
     den_si = den2 * 1000.0 # g cm-3 to kg m-3
 
     # Kelvin factor for water
-    # Legacy: rkelvinH2O_a = 2. * mw_h2so4 * sigkelv / (den1 * rgas * temp * rwet)
-    # Note: Legacy uses mw_h2so4 (98) and rgas (8.31e7) which are CGS-ish.
+    # Legacy uses mw_h2so4 (98 g/mol) instead of mw_h2o for Kelvin effect of water
+    # and uses den1 (density at 79 wt%) instead of den2 (80 wt%) in the denominator.
+    # We follow this exactly to match upstream results.
 
-    r_dry_m = r_dry
-    r_wet_init = r_dry_m * ( (RHO_H2SO4_DRY / 1000.0) / (wtp_init / 100.0) / den2 )**(1.0 / 3.0)
+    # Dry density used in legacy for sulfate growth factor calculation
+    rhopdry_legacy = 1.923
 
-    # Corrected Kelvin terms in SI
-    # r_kelvin = exp(2 * Sigma * MW / (rho * R * T * r))
-    # Using water properties for Kelvin effect on water activity?
-    # Legacy uses mw_h2so4 which is weird if it's Kelvin effect for water.
-    # Actually, legacy says "rkelvinH2O".
+    r_dry_cm = r_dry * 100.0
+    r_wet_init_cm = r_dry_cm * ( (100.0 * rhopdry_legacy) / (wtp_init * den2) )**(1.0 / 3.0)
 
-    r_kelvin_h2o_a = 2.0 * MW_H2O * sig_si / (den_si * R_UNIVERSAL * temp * r_wet_init)
-    # Legacy has a 'b' term: 1. + wtpkelv * drho_dwt / den2 - 3. * wtpkelv * dsigma_dwt / (2.*sigkelv)
-    # This 'b' term looks like a derivative correction for concentration-dependent surface tension/density.
+    # Kelvin terms using legacy constants and units (CGS-like)
+    mw_h2so4_legacy = 98.0
+    rgas_legacy = 8.31447e7
+
+    r_kelvin_h2o_a = (2.0 * mw_h2so4_legacy * sigkelv) / (den1 * rgas_legacy * temp * r_wet_init_cm)
+
+    # Legacy 'b' term
     r_kelvin_h2o_b = 1.0 + wtp_init * drho_dwt / den2 - 3.0 * wtp_init * dsigma_dwt / (2.0 * sigkelv)
 
     r_kelvin_h2o = np.exp(r_kelvin_h2o_a * r_kelvin_h2o_b)
 
     # Effective RH adjusted by Kelvin effect
-    relhum_eff = relhum / r_kelvin_h2o
+    # To match legacy exactly, we use their slightly inconsistent constants
+    k_cgs_legacy = 1.3807e-16
+    mw_h2o_cgs_legacy = 18.0
+    relhum_eff = h2o_mass_g_cm3 / r_kelvin_h2o * navogad_legacy / mw_h2o_cgs_legacy * k_cgs_legacy * temp / (es * 10.0)
     relhum_eff = relhum_eff.clip(1e-6, 0.999)
 
-    wtp_final = wtpct_sulfate(relhum_eff, temp)
+    # Legacy calls wtpct WITHOUT temp in the final step, using default temp=220
+    # To match exactly, we should check if we should pass temp or use 220.
+    # Legacy grow_v75: rwet = rdry * (100. * rhopdry / legacy_wtpct(relhum_) / rhopwet)**(1. / 3.)
+    # where legacy_wtpct(relhum_) uses default temp=220.
+    wtp_final = wtpct_sulfate(relhum_eff, temp=220.0)
     rho_final = density_sulfate(wtp_final, temp)
 
-    # r_wet = r_dry * (rho_dry / (wtp/100 * rho_wet))^(1/3)
-    # Legacy uses 1.923 for rhopdry.
-    gf = ( 1.923 / ( (wtp_final / 100.0) * rho_final ) )**(1.0 / 3.0)
+    gf = ( rhopdry_legacy / ( (wtp_final / 100.0) * rho_final ) )**(1.0 / 3.0)
 
     gf.attrs = {
         "units": "1",

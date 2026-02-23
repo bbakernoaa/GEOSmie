@@ -935,7 +935,9 @@ def process_wavelength(li, lam, params, radind, rh, xxarr, drarr, xxarr_, drarr_
             ang = angmie
         
         theta = np.radians(ang)
-        p11n = 2.*ret['p11'] / np.trapz(ret['p11'] * np.sin(theta),theta)
+        # Use np.trapezoid for NumPy 2.0+ compatibility, fall back to np.trapz
+        trapz = getattr(np, 'trapezoid', None) or getattr(np, 'trapz')
+        p11n = 2.*ret['p11'] / trapz(ret['p11'] * np.sin(theta), x=theta)
         ret['p12'] = ret['p12']*p11n/ret['p11']
         ret['p22'] = ret['p22']*p11n/ret['p11']
         ret['p33'] = ret['p33']*p11n/ret['p11']

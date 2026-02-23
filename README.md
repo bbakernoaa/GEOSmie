@@ -47,10 +47,48 @@ The package consists of the following parts:
 - Generalized spherical function expansion code (gsf/)
 - Kernel generation code (root directory)
 
-## How to Build GEOSmie
-### Preliminary Steps
+## Installation
 
-#### Load Build Modules
+GEOSmie can be installed either in a standard Python environment (recommended for most users) or within the specific NASA GEOS ecosystem (for GEOS developers).
+
+### 1. General Installation (Universal)
+
+For users on any system (Linux, macOS, Windows) with a standard Python installation:
+
+#### Step 1: Clone the repository
+
+```bash
+git clone https://github.com/GEOS-ESM/GEOSmie.git
+cd GEOSmie
+```
+
+#### Step 2: Install dependencies
+
+It is recommended to use a virtual environment:
+
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+#### Step 3: Install the package
+
+Install the package and its subcomponents in editable mode:
+
+```bash
+pip install -e .
+pip install -e src/pymiecoated
+```
+
+### 2. NASA GEOS Ecosystem Installation
+
+Targeted for NCCS Discover, NAS, or GMAO desktops.
+
+#### Preliminary Steps
+
+##### Load Build Modules
 
 In your `.bashrc` or `.tcshrc` or other rc file add a line:
 
@@ -90,7 +128,7 @@ loading the `GEOSenv` module. The only notable modification needed then is to ch
 `cmake_it` code and change the fortran reference as necessary; e.g., change `ifort` to
 `gfortran` on bender.
 
-### Use mepo to clone the repository
+#### Use mepo to clone the repository
 
 [Mepo](https://github.com/GEOS-ESM/mepo) is a multiple repository tool available on github.
 
@@ -168,42 +206,47 @@ This will create an independent experiment directory for running GEOSmie.
 You can choose between starting scripts found in `src/scripts` as a template.
 These scripts implement the following ways to run GEOSmie.
 
-## Main code
+## Usage
 
-The main single-scattering property calculator consists of two parts: calculation at individual wavelengths, and calculation over wavelength bands. The first part is always necessary, the second needs to be run only if wavelength band integrated files are necessary.
+The main single-scattering property calculator consists of two parts: calculation at individual wavelengths, and calculation over wavelength bands.
+
+### Running in a Standard Environment
+
+If you installed via the "Universal" method, set your `PYTHONPATH` to the project root:
+
+```bash
+export PYTHONPATH=$PWD
+```
 
 ### Calculations at individual wavelengths
 
 To calculate single-scattering properties at individual wavelengths:
 
 ```bash
-./runoptics.py --name path/to/file.json
+cd src/geosmie
+python runoptics.py --name ../config/geosparticles/bc_light.json --dest ../../output
 ```
 
-Where file.json defines all of the parameters of the calculation. ".json" can be omitted from the runoptics.py command as a convenience. See JSON examples under geosparticles/ for current GEOS aerosol particles. For users who only want single-scattering properties at individual wavelengths this is all that is needed, and further processing is not needed.
+Where the `--name` argument points to a JSON file defining the calculation parameters. See JSON examples under `src/config/geosparticles/`.
 
-runoptics.py has a few additional options, use
-
+For more options:
 ```bash
-./runoptics.py --help
+python runoptics.py --help
 ```
-
-to see them
 
 ### Calculations over wavelength bands
 
 To calculate single-scattering properties at wavelength bands:
 
 ```bash
-./runbands.py --filename filename.nc
+python runbands.py --filename ../../output/optics_bc_light.nomom.nc4
 ```
 
-where filename.nc should be an output file from runoptics.py
+Where the input is an output file from `runoptics.py`.
 
-For additional options, see
-
+For more options:
 ```bash
-./runbands.py --help
+python runbands.py --help
 ```
 
 ## GSF expansion code

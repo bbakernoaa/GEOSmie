@@ -4,8 +4,9 @@
 import numpy as np
 from optparse import OptionParser
 import matplotlib.pyplot as plt
-
-cpi = 4./3.*np.pi
+from src.utils.psd import carma_bins, find_rmin, lognormal_dndlnr
+from src.utils.microphysics import wtpct_sulfate, density_sulfate, growth_factor_sulfate
+from src.utils.constants import FOUR_THIRDS_PI as cpi
 
 def tune():
     """
@@ -29,19 +30,19 @@ def tune():
     numperdecade = np.ones(nbin)*num0
     fracs = np.ones(nbin)
    
-    rmin, rmrat = findrmin(nbin, rlow, rup)
-    r, dr, rlow, rup, rmassup = carmabins(nbin,rmrat,rmin)
+    rmin, rmrat = find_rmin(nbin, rlow, rup)
+    r, dr, rlow, rup, rmassup = carma_bins(nbin, rmrat, rmin)
 #   Compute rmed given r = reff
     rmed = r*np.exp(-5.*np.log(sigma)*np.log(sigma)/2.)
 
 #   Now compute the number in the default intervals but at a higher res
     for ibin in range(0,nbin):
         nb = num
-        rl = rlow[ibin]
-        ru = rup[ibin]
-        rm, rmr = findrmin(nb, rl, ru)
-        r_, dr_, rlow_, rup_, rmassup_ = carmabins(nb,rmr,rm)
-        dndlogr = lognormal(r_, rmed[ibin], sigma[ibin])
+        rl = rlow[ibin].values if hasattr(rlow[ibin], 'values') else rlow[ibin]
+        ru = rup[ibin].values if hasattr(rup[ibin], 'values') else rup[ibin]
+        rm, rmr = find_rmin(nb, rl, ru)
+        r_, dr_, rlow_, rup_, rmassup_ = carma_bins(nb, rmr, rm)
+        dndlogr = lognormal_dndlnr(r_, rmed[ibin], sigma[ibin])
         reff_ = np.sum(r_**3*dndlogr*dr_/r_)/np.sum(r_**2*dndlogr*dr_/r_)
         print(ibin, rmed[ibin], np.sum(dndlogr*dr_/r_), reff_, r[ibin])
         plt.bar(rlow[ibin], 1, width=dr[ibin], align='edge', color='blue', edgecolor='black', label='CARMA Number', alpha=0.5)
@@ -53,194 +54,21 @@ def tune():
     return
 
 def carmabins(nbin, rmrat, rmin, rhop=1.):
-
-    """
-     Procedure returns a carma-like distributions of radius bins
-     The bins are centered in volume betwen rlow and rup
-     That is:
-      r^3-rlow^3 = rup^3-r^3,
-     or equivalently
-      r^3. = (rup^3.+rlow^3.)/2.
-     rup^3 = rlow^3*rmrat, which can be solved to find r given rmrat
-     and a desired rlow, e.g. rmin = 1.d-6*((1.+rmrat)/2.)^(1.d/3)
-     where the desired rlow = 1.d-6 in this example.
-     The meaning of r is that it is the radius of the particle with 
-     the average volume of the bin.
-
-     Variables:
-     Input
-      nbin = number of size bins desired
-      rmrat = ratio of volume (mass) between size bins
-      rmin = radius (r) of smallest bins
-      rhop = particle density
-     Output
-      rmass = mass of bin (4./3.*pi*r^3.)*rhop
-      rmassup = mass of upper limit of bin (4./3.*pi*rup^3.)*rhop
-      r = radius
-      rup = bin upper edge radius
-      dr = width of bin (rup - rlow)
-      rlow = bin lower edge radius
-
-     This code is adapted from carmabins.pro IDL code which is itself
-     based on CARMA setupbins.f90
-    """
-    rmassmin = cpi*rhop*rmin**3.
-    vrfact = ( (3./2./np.pi / (rmrat+1))**(1./3.))*(rmrat**(1./3.) - 1.)
-
-    rmass   = np.zeros(nbin)
-    rmassup = np.zeros(nbin)
-    r       = np.zeros(nbin)
-    rup     = np.zeros(nbin)
-    dr      = np.zeros(nbin)
-    rlow    = np.zeros(nbin)
-
-    for ibin in range(nbin):
-        rmass[ibin]   = rmassmin*rmrat**ibin
-
-    rmassup = 2.*rmrat/(rmrat+1.)*rmass
-    r       = (rmass/rhop/cpi)**(1./3.)
-    rup     = (rmassup/rhop/cpi)**(1./3.)
-    dr      = vrfact*(rmass/rhop)**(1./3.)
-    rlow    = rup - dr
-
-    return r, dr, rlow, rup, rmassup
+    r, dr, rlow, rup, rmassup = carma_bins(nbin, rmrat, rmin, rhop)
+    return r.values, dr.values, rlow.values, rup.values, rmassup.values
 
 def findrmin(nbin,rlow,rup):
-    """
-    Given an edge values of rlow and rup find the carma appropriate
-    rmin and rmrat to yield the desired PSD
-    To be used prior to call to carmabins to provide rmrat and rmin
-    """
-    rmrat = (rup**3/rlow**3)**(1./nbin)
-    vrfact = ( (3./2./np.pi / (rmrat+1))**(1./3.))*(rmrat**(1./3.) - 1.)
-    f = 2.*rmrat/(rmrat+1.)
-    rmin = 1./(f**(1./3.) - cpi**(1./3.)*vrfact)*rlow
-    return rmin, rmrat
+    return find_rmin(nbin, rlow, rup)
 
 def lognormal(r, rm, sigma, N=1.):
-    """
-    Fill out a set of discrete bins using the parameters of a lognormal
-    distribution. This function produces dN/dr form of the function. Note
-    that this version takes sigma, not S; S = ln(sigma)
-
-    Arguments:
-    r -- the radii at which to evaluate the function
-    rm -- median radius of the lognormal distribution
-    sigma -- width parameter of the lognormal distribution
-    N -- number/scaling parameter of the distribution
-    """
-    dndlogr = (N/(np.log(sigma)*np.sqrt(2*np.pi)))*np.exp(-1*(np.log(2*r)-np.log(2*rm))**2/(2*np.log(sigma)**2))
-    return dndlogr
-
+    return lognormal_dndlnr(r, rm, sigma, N).values
 
 def wtpct(relhum, temp=220.):
-    '''
-    Tabazadeh wtpct of sulfuric acid aerosol as function of temperature
-    and RH, valid for t >=185 to t <=260 K
-    '''
-
-#   Input is relative humidity
-    activ = relhum
-
-    rhopdry = 1.923
-
-    if activ < 0.05:
-        activ   = np.max([activ,1.e-6])    # restrict minimum activity
-        atab1   = 12.37208932	
-        btab1 	= -0.16125516114
-        ctab1 	= -30.490657554
-        dtab1 	= -2.1133114241
-        atab2 	= 13.455394705	
-        btab2 	= -0.1921312255
-        ctab2 	= -34.285174607
-        dtab2 	= -1.7620073078
-    elif (activ >= 0.05) & (activ <= 0.85):
-        atab1 	= 11.820654354
-        btab1 	= -0.20786404244
-        ctab1 	= -4.807306373
-        dtab1 	= -5.1727540348
-        atab2 	= 12.891938068	
-        btab2 	= -0.23233847708
-        ctab2 	= -6.4261237757
-        dtab2 	= -4.9005471319
-    else:
-        activ   = np.min([activ,1.])      # restrict maximum activity
-        atab1 	= -180.06541028
-        btab1 	= -0.38601102592
-        ctab1 	= -93.317846778
-        dtab1 	= 273.88132245
-        atab2 	= -176.95814097
-        btab2 	= -0.36257048154
-        ctab2 	= -90.469744201
-        dtab2 	= 267.45509988
-
-    contl = atab1*(activ**btab1)+ctab1*activ+dtab1
-    conth = atab2*(activ**btab2)+ctab2*activ+dtab2
-      
-    contt = contl + (conth-contl) * ((temp -190.)/70.)
-    conwtp = (contt*98.) + 1000.
-
-    wtpct_tabaz = (100.*contt*98.)/conwtp
-    wtpct_tabaz = np.min([np.max([wtpct_tabaz,1.]),100.]) # restrict between 1 and 100 %
-
-    return wtpct_tabaz
-
-
+    return float(wtpct_sulfate(relhum, temp))
 
 def dens(relhum,temp=220.):
-    '''
-    Calculate the density of sulfate particle given a relative humidity
-    using wtpct after CARMA sulfate utils
-    '''
-
-#   Input is wtpct (= wtp)
-    wtp = wtpct(relhum,temp=temp)
-
-    dnwtp = np.array([ 0., 1., 5., 10., 20., 25., 30., 35., 40., 
-     41., 45., 50., 53., 55., 56., 60., 65., 66., 70., 
-     72., 73., 74., 75., 76., 78., 79., 80., 81., 82., 
-     83., 84., 85., 86., 87., 88., 89., 90., 91., 92., 
-     93., 94., 95., 96., 97., 98., 100. ])
-     
-    dnc0 = np.array([ 1., 1.13185, 1.17171, 1.22164, 1.3219, 1.37209,        
-     1.42185, 1.4705, 1.51767, 1.52731, 1.56584, 1.61834, 1.65191, 
-     1.6752, 1.68708, 1.7356, 1.7997, 1.81271, 1.86696, 1.89491,   
-     1.9092, 1.92395, 1.93904, 1.95438, 1.98574, 2.00151, 2.01703, 
-     2.03234, 2.04716, 2.06082, 2.07363, 2.08461, 2.09386, 2.10143,
-     2.10764, 2.11283, 2.11671, 2.11938, 2.12125, 2.1219, 2.12723, 
-     2.12654, 2.12621, 2.12561, 2.12494, 2.12093 ])
-     
-    dnc1 = np.array([ 0.,  -0.000435022, -0.000479481, -0.000531558, -0.000622448,
-     -0.000660866, -0.000693492, -0.000718251, -0.000732869, -0.000735755, 
-     -0.000744294, -0.000761493, -0.000774238, -0.00078392, -0.000788939,  
-     -0.00080946, -0.000839848, -0.000845825, -0.000874337, -0.000890074,  
-     -0.00089873, -0.000908778, -0.000920012, -0.000932184, -0.000959514,  
-     -0.000974043, -0.000988264, -0.00100258, -0.00101634, -0.00102762,    
-     -0.00103757, -0.00104337, -0.00104563, -0.00104458, -0.00104144,      
-     -0.00103719, -0.00103089, -0.00102262, -0.00101355, -0.00100249,      
-     -0.00100934, -0.000998299, -0.000990961, -0.000985845, -0.000984529,  
-     -0.000989315 ])
-
-    i=0
-    while wtp > dnwtp[i]:
-        i += 1
-
-    den2 = dnc0[i]+dnc1[i]*temp
-
-    if (i == 0) | (wtp == dnwtp[i]):
-        dens = den2
-    else:
-        den1=dnc0[i-1]+dnc1[i-1]*temp
-        frac=(dnwtp[i]-wtp)/(dnwtp[i]-dnwtp[i-1])
-        dens=den1*frac+den2*(1.0-frac)
-
-#   Pete would do this by adding water (1) and sulfate (1.93)
-#    densp = ((100.-wtp) + wtp*1.93) / 100.
-#    print, densp
-
-    return dens
-    
-
+    wtp = wtpct_sulfate(relhum, temp)
+    return float(density_sulfate(wtp, temp))
 
 def grow_v75(relhum, rd, temp=220.):
     
@@ -309,9 +137,7 @@ def grow_v75(relhum, rd, temp=220.):
     rwet    = rdry * (100. * rhopdry / wtpct(relhum_) / rhopwet)**(1. / 3.)   
 
 
-#    print, temp, relhum, relhum_, rwet/rdry
-
-    return rwet/rdry
+    return float(growth_factor_sulfate(relhum, rd, temp))
 
 def printfield(f,nbin,title,field,close=False):
 
@@ -384,8 +210,8 @@ def printjson(nbin, rlow, rup, rhop0, species='SU', sigma0=1.1,num0=800,version=
     fracs = np.ones(nbin)
 
 #   Find particle grid
-    rmin, rmrat = findrmin(nbin, rlow, rup)
-    r, dr, rlow, rup, rmassup = carmabins(nbin,rmrat,rmin)
+    rmin, rmrat = find_rmin(nbin, rlow, rup)
+    r, dr, rlow, rup, rmassup = carma_bins(nbin, rmrat, rmin)
 
 #   Compute rmed given r = reff and sigma
     rmed = r*np.exp(-5.*np.log(sigma)*np.log(sigma)/2.)

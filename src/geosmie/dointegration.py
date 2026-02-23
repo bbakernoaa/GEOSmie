@@ -9,7 +9,9 @@ import hydrophobic
 import sys
 import multiprocessing
 from pymiecoated.mie_coated import MultipleMie
-import particleparams as pp
+from src.geosmie import particleparams as pp
+from src.utils.psd import carma_bins, find_rmin
+from src.utils.constants import FOUR_THIRDS_PI as cpi
 
 """
 These govern how integration and dimensions etc are done, so define them here
@@ -104,54 +106,12 @@ def getDR(arr):
 def getXArrCarma(minx, maxx, nbinperdecade):
   """
   Carma-style bins
-
-  Best I can understand is that carma does exponential masses,
-  e.g. mass = mass * x, and then gets the dr from the mass/volume
-
-  this makes the whole decade division completely artificial and unnecessary,
-  which is great as it lets us skip many of the largest size parameters and just
-  use directly the min/max sizes
-
-  so basically we would calculate decades by max/min and from that get total num of bins
-
-  then, we'd calculate 
-  rat = rMaxUse/rMinUse
-  rmRat = (rat^3)^(1./double(nBinMin))
-  rMin = rMinUse*((1.+rmRat)/2.)^(1.d/3)
-
-  this means we divide the whole range into nbinmin steps (which itself is decades * binperdec)
-  and apply a constant multiplier at each step, the multiplier being rmrat
-  (rmass[ibin]   = rmassmin*rmrat^double(ibin))
-  r[ibin]       = (rmass[ibin]/rhop/cpi)^(1.d/3.)
-
-  main difference is that I want to use volumes and not masses so we can avoid having rho here
-  thus, we get the volume of each bin (or rather the volume of the particle in that bin)
-  and from that we can easily get the r using vrfact
   """
-
-  rat = maxx / minx
   numdec = np.log10(maxx / minx) 
-  nbin = numdec * nbinperdecade
-  rmRat = (rat ** 3) ** (1./nbin)
-  rMin = minx * ((1. + rmRat) / 2.) ** (1./3.)
-
-  cpi = 4. / 3. * np.pi
-
-  rvolmin = cpi * rMin ** 3.
-
-  # convert from volume to radius bin width (dr)
-  vrfact = ( (3./2./np.pi / (rmRat+1)) ** (1./3.)) * (rmRat ** (1./3.) - 1.)
-
-  ret = []
-  drarr = []
-  for i in range(int(nbin)):
-    rvol   = rvolmin * rmRat ** i
-    r       = (rvol / cpi) ** (1./3.)
-    dr      = vrfact * (rvol) ** (1./3.)
-    ret.append(r)
-    drarr.append(dr)
-
-  return np.array(ret), np.array(drarr)
+  nbin = int(numdec * nbinperdecade)
+  rmin_val, rmrat_val = find_rmin(nbin, minx, maxx)
+  r, dr, _, _, _ = carma_bins(nbin, rmrat_val, rmin_val)
+  return r.values, dr.values
 
 def getXArr(minx, maxx, nbinperdecade):
   decades = maxx / minx
@@ -975,7 +935,9 @@ def process_wavelength(li, lam, params, radind, rh, xxarr, drarr, xxarr_, drarr_
             ang = angmie
         
         theta = np.radians(ang)
-        p11n = 2.*ret['p11'] / np.trapz(ret['p11'] * np.sin(theta),theta)
+        # Use np.trapezoid for NumPy 2.0+ compatibility, fall back to np.trapz
+        trapz = getattr(np, 'trapezoid', None) or getattr(np, 'trapz')
+        p11n = 2.*ret['p11'] / trapz(ret['p11'] * np.sin(theta), x=theta)
         ret['p12'] = ret['p12']*p11n/ret['p11']
         ret['p22'] = ret['p22']*p11n/ret['p11']
         ret['p33'] = ret['p33']*p11n/ret['p11']

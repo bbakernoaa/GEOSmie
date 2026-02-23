@@ -298,6 +298,7 @@ class OPTICS(object):
         if ibin is None:
             ibin = np.arange(self.p11.sizes['bin'])
 
+        trapz = getattr(np, 'trapezoid', None) or getattr(np, 'trapz')
         for rh in irh:
             for wav in iwav:
                 for bin in ibin:
@@ -308,7 +309,7 @@ class OPTICS(object):
                     ax.plot(self.angle, p11,label='GSF')
                     # normalize S11
                     s11 = self.s11.isel(rh=rh,wavelength=wav,bin=bin)
-                    s11n = 2.*s11 / np.trapz(s11 * np.sin(self.theta),self.theta)
+                    s11n = 2.*s11 / trapz(s11 * np.sin(self.theta), x=self.theta)
                     ax.plot(self.angle,s11n,label='P11')
                     ax.legend()
                     ax.set_title('P11=P1')           
